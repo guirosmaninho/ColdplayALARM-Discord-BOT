@@ -19,7 +19,7 @@ TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("OWNERID"))
 TIMEZONE = "Europe/Lisbon"
 CONCERT_FILE = "data/coldplay_concerts.json"
-NUM_IMAGES = 128
+NUM_IMAGES = 155
 
 # Initialize bot with proper intents
 intents = discord.Intents.default()
