@@ -38,6 +38,12 @@ TOKEN=your_token_here
 OWNERID=your_user_id_here
 ```
 
+Write your own image repository links (optional). This is an example:
+``` python
+repo_url = "https://api.github.com/repos/guirosmaninho/ColdplayALARM-Discord-BOT/contents/images/banner"
+img_repo_url = "https://github.com/guirosmaninho/ColdplayALARM-Discord-BOT/blob/main/images/banner"
+```
+
 ## 4. Run the bot
 ``` bash
 python main.py
