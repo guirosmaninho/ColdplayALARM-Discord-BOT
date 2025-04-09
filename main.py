@@ -5,6 +5,7 @@ import os
 import random
 import sqlite3
 import subprocess
+import requests
 from typing import Optional
 
 import discord
@@ -19,7 +20,19 @@ TOKEN = os.getenv("TOKEN")
 OWNER_ID = int(os.getenv("OWNERID"))
 TIMEZONE = "Europe/Lisbon"
 CONCERT_FILE = "data/coldplay_concerts.json"
-NUM_IMAGES = 155
+NUM_IMAGES = 0
+
+repo_url = "https://api.github.com/repos/guirosmaninho/ColdplayALARM-Discord-BOT/contents/images/banner"
+img_repo_url = "https://github.com/guirosmaninho/ColdplayALARM-Discord-BOT/blob/main/images/banner"
+response = requests.get(repo_url)
+if response.status_code == 200:
+    contents = response.json()
+    file_count = len(contents)
+
+    if isinstance(file_count, int) and file_count > 0:
+        NUM_IMAGES = file_count
+    else:
+        print("Error: No images found!")
 
 # Initialize bot with proper intents
 intents = discord.Intents.default()
@@ -83,9 +96,10 @@ async def get_next_concert() -> discord.Embed:
                 embed.add_field(name="Date: ", value=concert['date'])
                 soldout_text = f"[{concert['soldout']}]({concert['link']})"
                 embed.add_field(name="Sold out: ", value=soldout_text, inline=True)
-                random_image_number = random.randint(1, NUM_IMAGES)
-                image_url = f"https://github.com/guirosmaninho/ColdplayALARM-Discord-BOT/blob/main/images/banner/coldplay{random_image_number}.jpeg?raw=true"
-                embed.set_image(url=image_url)
+                if NUM_IMAGES > 0:
+                    random_image_number = random.randint(1, NUM_IMAGES)
+                    image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
+                    embed.set_image(url=image_url)
                 embed.set_footer(text=f"Sent by {bot.user.name}")
                 return embed
         except (KeyError, ValueError):
@@ -145,7 +159,7 @@ async def send_daily_message():
 
     while not bot.is_closed():
         now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-        if now.hour == 00 and now.minute == 00:
+        if now.hour == 0 and now.minute == 0:
             c.execute('SELECT guild_id, daily_message_channel_id FROM guild_settings')
             guild_settings = c.fetchall()
 
@@ -154,7 +168,30 @@ async def send_daily_message():
                 if guild:
                     channel = guild.get_channel(channel_id)
                     if channel:
-                        embed = await get_next_concert()
+                        embed = None
+                        for concert in concert_data:
+                            concert_date = datetime.datetime.strptime(concert["date"], "%d/%m/%Y").date()
+                            if concert_date == now.date():
+                                embed = discord.Embed(
+                                    title="🎉 Today is the Day! 🎶",
+                                    description=f"Coldplay is performing today at **{concert['stadium']}**, {concert['city']}!",
+                                    color=discord.Color.gold(),
+                                    timestamp=now
+                                )
+                                embed.add_field(name="Region", value=concert['region'], inline=True)
+                                embed.add_field(name="Soldout", value=concert['soldout'], inline=True)
+                                embed.add_field(name="More Info", value=f"[Click Here]({concert['link']})", inline=False)
+                                if NUM_IMAGES > 0:
+                                    random_image_number = random.randint(1, NUM_IMAGES)
+                                    image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
+                                    embed.set_image(url=image_url)
+                                embed.set_footer(text=f"Sent by {bot.user.name}")
+                                break
+
+                        if not embed:
+                            # Default message for non-concert days
+                            embed = await get_next_concert()
+
                         try:
                             await channel.send(embed=embed)
                             print(f"Sent daily message at {now.hour}:{now.minute}:{now.second}")
@@ -207,9 +244,10 @@ async def coldplay_dates(ctx):
         embed.add_field(name="Soldout: ", value=concert['soldout'], inline=True)
         moreinfo_text = f"[CLICK HERE]({concert['link']})"
         embed.add_field(name="More info: ", value=moreinfo_text, inline=True)
-        random_image_number = random.randint(1, NUM_IMAGES)
-        image_url = f"https://github.com/guirosmaninho/ColdplayALARM-Discord-BOT/blob/main/images/banner/coldplay{random_image_number}.jpeg?raw=true"
-        embed.set_image(url=image_url)
+        if NUM_IMAGES > 0:
+            random_image_number = random.randint(1, NUM_IMAGES)
+            image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
+            embed.set_image(url=image_url)
         embed.set_footer(text=f"Sent by {bot.user.name}")
         embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url)
 
