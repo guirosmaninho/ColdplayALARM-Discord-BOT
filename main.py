@@ -21,6 +21,7 @@ OWNER_ID = int(os.getenv("OWNERID"))
 TIMEZONE = "Europe/Lisbon"
 CONCERT_FILE = "data/coldplay_concerts.json"
 NUM_IMAGES = 0
+FOOTER_TEXT = "Guiding You Through the Speed of Sound 🎶"
 
 repo_url = "https://api.github.com/repos/guirosmaninho/ColdplayALARM-Discord-BOT/contents/images/banner"
 img_repo_url = "https://github.com/guirosmaninho/ColdplayALARM-Discord-BOT/blob/main/images/banner"
@@ -50,7 +51,8 @@ c = conn.cursor()
 # Ensure the table exists
 c.execute('''CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id BIGINT PRIMARY KEY,
-                daily_message_channel_id BIGINT
+                daily_message_channel_id BIGINT,
+                notifications BOOLEAN DEFAULT 0
             )''')
 conn.commit()
 
@@ -85,6 +87,7 @@ async def get_next_concert() -> discord.Embed:
         try:
             concert_date = datetime.datetime.strptime(concert["date"], "%d/%m/%Y").date()
             if concert_date >= now:
+                days_left = (concert_date - now).days
                 embed = discord.Embed(
                     title="Next Coldplay Concert",
                     color=discord.Color(random.randint(0, 0xFFFFFF)),
@@ -93,14 +96,14 @@ async def get_next_concert() -> discord.Embed:
                 embed.add_field(name="Stadium: ", value=concert['stadium'])
                 embed.add_field(name="City: ", value=concert['city'])
                 embed.add_field(name="Region: ", value=concert['region'])
-                embed.add_field(name="Date: ", value=concert['date'])
+                embed.add_field(name="Date: ", value=f"{concert['date']} (**{days_left} days left**)")
                 soldout_text = f"[{concert['soldout']}]({concert['link']})"
                 embed.add_field(name="Sold out: ", value=soldout_text, inline=True)
                 if NUM_IMAGES > 0:
                     random_image_number = random.randint(1, NUM_IMAGES)
                     image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
                     embed.set_image(url=image_url)
-                embed.set_footer(text=f"Sent by {bot.user.name}")
+                embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
                 return embed
         except (KeyError, ValueError):
             continue
@@ -120,7 +123,19 @@ def warning_message(severity, channel, message):
         color = colors.get(severity, discord.Color.default()),
         timestamp=datetime.datetime.now(pytz.timezone(TIMEZONE))
     )
-    embed.set_footer(text=f"Sent by {bot.user.name}")
+    embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
+    asyncio.ensure_future(channel.send(embed=embed))
+
+    return 0
+
+def embed_message(channel, title, message):
+    embed = discord.Embed(
+        title=title,
+        description=message,
+        color=discord.Color(random.randint(0, 0xFFFFFF)),
+        timestamp=datetime.datetime.now(pytz.timezone(TIMEZONE))
+    )
+    embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
     asyncio.ensure_future(channel.send(embed=embed))
 
     return 0
@@ -129,7 +144,7 @@ def warning_message(severity, channel, message):
 @commands.has_permissions(administrator=True)
 async def coldplay_setup(ctx, channel_id: Optional[int] = None):
     """
-    Sets the channel for daily Coldplay messages.
+    Sets the channel for daily Coldplay messages and asks for additional notification preferences.
     """
     if channel_id is None:
         warning_message(3, ctx.channel, "Please provide a channel ID. Usage: `.coldplay-setup [channel_id]`")
@@ -149,6 +164,24 @@ async def coldplay_setup(ctx, channel_id: Optional[int] = None):
 
     warning_message(1, ctx.channel, f"Daily Coldplay message channel set to {channel.mention}")
 
+    embed_message(ctx.channel, "Notifications","Would you like to receive notifications for other events (e.g., band members' birthdays)? Reply with `yes` or `no`.")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
+
+    try:
+        msg = await bot.wait_for("message", check=check, timeout=30.0)
+        notify_events = 1 if msg.content.lower() in ["yes", "y", "1"] else 0
+
+        if notify_events:
+            c.execute('UPDATE guild_settings SET notifications = 1 WHERE guild_id = ?', (guild_id,))
+            conn.commit()
+            warning_message(1,ctx.channel,"You will now receive notifications for other events!")
+        else:
+            warning_message(1, ctx.channel, "You will not receive notifications for other events.")
+    except asyncio.TimeoutError:
+        warning_message(2, ctx.channel, "No response received. Defaulting to no notifications for other events.")
+
 @coldplay_setup.error
 async def coldplay_setup_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -159,7 +192,7 @@ async def send_daily_message():
 
     while not bot.is_closed():
         now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-        if now.hour == 0 and now.minute == 0:
+        if now.hour == 0 and now.minute == 6:
             c.execute('SELECT guild_id, daily_message_channel_id FROM guild_settings')
             guild_settings = c.fetchall()
 
@@ -185,7 +218,7 @@ async def send_daily_message():
                                     random_image_number = random.randint(1, NUM_IMAGES)
                                     image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
                                     embed.set_image(url=image_url)
-                                embed.set_footer(text=f"Sent by {bot.user.name}")
+                                embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
                                 break
 
                         if not embed:
@@ -200,6 +233,144 @@ async def send_daily_message():
 
             await asyncio.sleep(60)  # Wait a minute to prevent duplicate sends
         await asyncio.sleep(30)  # Check every 30 seconds
+
+async def check_today_events():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+        today_day = now.day
+        today_month = now.month
+
+        try:
+            # Connect to the events database
+            conn = sqlite3.connect('data/coldplay-events.db')
+            cursor = conn.cursor()
+
+            # Ensure tables exist
+            cursor.execute('''CREATE TABLE IF NOT EXISTS birthdays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day INTEGER, month INTEGER, year INTEGER,
+                name TEXT, role TEXT, image TEXT)''')
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS singles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day INTEGER, month INTEGER, year INTEGER,
+                single_name TEXT, album_name TEXT, image TEXT)''')
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS albums (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day INTEGER, month INTEGER, year INTEGER,
+                album_name TEXT, songs TEXT, image TEXT)''')
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS others (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day INTEGER, month INTEGER, year INTEGER,
+                hour INTEGER, minute INTEGER,
+                title TEXT, description TEXT, image TEXT)''')
+
+            # Fetch events for today
+            cursor.execute("""
+                SELECT name, day, month, year, role, image 
+                FROM birthdays 
+                WHERE day = ? AND month = ?
+            """, (today_day, today_month))
+            birthdays = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT single_name, year, album_name, image 
+                FROM singles 
+                WHERE day = ? AND month = ?
+            """, (today_day, today_month))
+            singles = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT album_name, year, songs, image 
+                FROM albums 
+                WHERE day = ? AND month = ?
+            """, (today_day, today_month))
+            albums = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT title, description, year, image 
+                FROM others 
+                WHERE day = ? AND month = ?
+            """, (today_day, today_month))
+            others = cursor.fetchall()
+
+            conn.close()
+
+            # Fetch channels with notifications enabled
+            conn = sqlite3.connect('data/guild_settings.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT daily_message_channel_id 
+                FROM guild_settings 
+                WHERE notifications = 1
+            """)
+            channels = cursor.fetchall()
+            conn.close()
+
+            for (channel_id,) in channels:
+                channel = bot.get_channel(channel_id)
+                if channel:
+                    for name, day, month, year, role, image in birthdays:
+                        embed = discord.Embed(
+                            title=f"🎂 Happy Birthday, {name}! 🎉",
+                            description=f"This day, **{now.year-year} year(s) ago**, our favorite ***{role}*** was born! Happy birthday, {name}!",
+                            color=discord.Color.gold(),
+                            timestamp=now
+                        )
+                        if image:
+                            embed.set_image(url=f"{image}")
+                        embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
+                        await channel.send(embed=embed)
+
+                    for single_name, year, album_name, image in singles:
+                        embed = discord.Embed(
+                            title="🎵 Single Release Anniversary! 🎤",
+                            description=f"This day, **{now.year-year} year(s) ago**, our favorite band released a new single!",
+                            color=discord.Color.gold(),
+                            timestamp=now
+                        )
+                        embed.add_field(name="Single Name", value=single_name, inline=True)
+                        embed.add_field(name="Album Name", value=album_name, inline=True)
+                        if image:
+                            embed.set_image(url=image)
+                        embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
+                        await channel.send(embed=embed)
+
+                    for album_name, year, songs, image in albums:
+                        embed = discord.Embed(
+                            title="💿 Album Release Anniversary! 🎶",
+                            description=f"This day, **{now.year-year} year(s) ago**, our favorite band released a new album!",
+                            color=discord.Color.gold(),
+                            timestamp=now
+                        )
+                        embed.add_field(name="Album Name", value=album_name, inline=False)
+                        embed.add_field(name="Songs", value="\n".join(songs.split(",")), inline=False)
+                        if image:
+                            embed.set_image(url=image)
+                        embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
+                        await channel.send(embed=embed)
+
+                    for title, description, year, image in others:
+                        embed = discord.Embed(
+                            title=title,
+                            description=f"This day **{now.year-year} year(s) ago**, {description}",
+                            color=discord.Color.gold(),
+                            timestamp=now
+                        )
+                        if image:
+                            embed.set_image(url=image)
+                        embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
+                        await channel.send(embed=embed)
+
+        except Exception as e:
+            print(f"Error checking today's events: {e}")
+
+        # Wait until the next day
+        await asyncio.sleep(24 * 60 * 60)
 
 
 @bot.command(name="coldplay-dates")
@@ -248,7 +419,7 @@ async def coldplay_dates(ctx):
             random_image_number = random.randint(1, NUM_IMAGES)
             image_url = f"{img_repo_url}/coldplay{random_image_number}.jpeg?raw=true"
             embed.set_image(url=image_url)
-        embed.set_footer(text=f"Sent by {bot.user.name}")
+        embed.set_footer(text=f"ColdplayALARM | {FOOTER_TEXT}")
         embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url)
 
     await ctx.send(embed=embed)
@@ -293,6 +464,7 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     bot.loop.create_task(update_concert_data())
     bot.loop.create_task(send_daily_message())
+    bot.loop.create_task(check_today_events())
 
 if __name__ == "__main__":
     asyncio.run(load_cogs())  # Load cogs first
