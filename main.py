@@ -142,33 +142,34 @@ def embed_message(channel, title, message):
 
 @bot.command(name="coldplay-setup")
 @commands.has_permissions(administrator=True)
-async def coldplay_setup(ctx, channel_id: Optional[int] = None):
+async def coldplay_setup(ctx):
     """
     Sets the channel for daily Coldplay messages and asks for additional notification preferences.
     """
-    if channel_id is None:
-        warning_message(3, ctx.channel, "Please provide a channel ID. Usage: `.coldplay-setup [channel_id]`")
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    embed_message(ctx.channel, "SETUP", "Please provide the **channel ID** or __mention the channel__ for daily Coldplay messages.")
+    try:
+        msg = await bot.wait_for("message", check=check, timeout=60.0)
+        if msg.content.startswith("<#") and msg.content.endswith(">"):  # If the user mentions the channel
+            channel_id = int(msg.content[2:-1])
+        else:
+            channel_id = int(msg.content)
+
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            warning_message(3, ctx.channel, "Invalid channel. Please restart the command.")
+            return
+    except (ValueError, asyncio.TimeoutError):
+        warning_message(3, ctx.channel, "Invalid input or timeout. Please restart the command.")
         return
 
     guild_id = ctx.guild.id
-
-    # Check if the channel ID is valid
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        warning_message(3, ctx.channel, "Invalid channel ID. Please provide a valid channel ID.")
-        return
-
-    # Save the channel ID in the database
     c.execute('REPLACE INTO guild_settings (guild_id, daily_message_channel_id) VALUES (?, ?)', (guild_id, channel_id))
     conn.commit()
 
-    warning_message(1, ctx.channel, f"Daily Coldplay message channel set to {channel.mention}")
-
-    embed_message(ctx.channel, "Notifications","Would you like to receive notifications for other events (e.g., band members' birthdays)? Reply with `yes` or `no`.")
-
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
-
+    embed_message(ctx.channel, "Notifications", f"**Daily Coldplay message channel set to {channel.mention}**\n\nWould you like to receive notifications for other events (e.g., band members' birthdays)? Reply with `yes` or `no`.")
     try:
         msg = await bot.wait_for("message", check=check, timeout=30.0)
         notify_events = 1 if msg.content.lower() in ["yes", "y", "1"] else 0
@@ -176,7 +177,7 @@ async def coldplay_setup(ctx, channel_id: Optional[int] = None):
         if notify_events:
             c.execute('UPDATE guild_settings SET notifications = 1 WHERE guild_id = ?', (guild_id,))
             conn.commit()
-            warning_message(1,ctx.channel,"You will now receive notifications for other events!")
+            warning_message(1, ctx.channel, "You will now receive notifications for other events!")
         else:
             warning_message(1, ctx.channel, "You will not receive notifications for other events.")
     except asyncio.TimeoutError:
@@ -443,6 +444,23 @@ async def update_db(ctx):
             warning_message(3, ctx.channel, f"Error updating database: {result.stderr}")
     except Exception as e:
         warning_message(3, ctx.channel, f"Unexpected error running update: {str(e)}")
+
+@bot.command(name="coldplay-reload-cogs", hidden=True)
+@commands.is_owner()
+async def reload_cogs(ctx):
+    """
+    Reloads all cogs in the ./commands directory.
+    """
+    for filename in os.listdir("./commands"):
+        if filename.endswith(".py") and filename != "__init__.py":
+            try:
+                await bot.unload_extension(f"commands.{filename[:-3]}")
+                await bot.load_extension(f"commands.{filename[:-3]}")
+                print(f"Reloaded `{filename}` successfully.")
+            except Exception as e:
+                warning_message(3, ctx.channel, f"Failed to reload `{filename}`: {e}")
+
+    warning_message(1, ctx.channel, "All cogs reloaded.")
 
 async def load_cogs():
     for filename in os.listdir("./commands"):
